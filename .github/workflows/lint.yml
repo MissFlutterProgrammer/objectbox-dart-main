@@ -1,0 +1,108 @@
+name: Code analysis
+
+# Avoid duplicate builds for pull requests, allow manual trigger.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+# Minimal access by default
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@0ad4b8fadaa221de15dcec353f45205ec38ea70b # v4.1.4
+      # Prefer running on Ubuntu over Dart Docker image
+      - uses: dart-lang/setup-dart@fedb1266e91cf51be2fdb382869461a434b920a3 # v1.6.2
+        with:
+          sdk: 3.3.0
+      - name: Get dependencies
+        run: |
+          dart pub get --directory=benchmark
+          dart pub get --directory=generator
+          dart pub get --directory=objectbox
+          dart pub get --directory=objectbox_test
+      - name: Generate code (benchmark)
+        working-directory: benchmark
+        run: dart run build_runner build
+      - name: Generate code (objectbox_test)
+        working-directory: objectbox_test
+        run: dart run build_runner build
+      - name: Analyze Dart packages
+        run: |
+          dart analyze benchmark
+          dart analyze generator
+          dart analyze objectbox
+          dart analyze objectbox_test
+      - name: Check formatting of all packages
+        run: dart format --set-exit-if-changed --fix .
+
+  pana:
+    runs-on: ubuntu-22.04
+    permissions:
+      checks: write # to publish the report
+    steps:
+      - uses: actions/checkout@0ad4b8fadaa221de15dcec353f45205ec38ea70b # v4.1.4
+      - uses: axel-op/dart-package-analyzer@7a6c3c66bce78d82b729a1ffef2d9458fde6c8d2 # v3
+        id: analysis # set an id for the current step
+        with:
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
+          relativePath: objectbox
+      # You can then use this id to retrieve the outputs in the next steps.
+      # The following step shows how to exit the workflow with an error if a score is below 100:
+      - name: Check scores
+        shell: bash
+        run: |
+          if (( ${{ steps.analysis.outputs.total }} < 100 )); then
+            echo "Expected score 130, got ${{ steps.analysis.outputs.total }}, please check the analysis report and resolve the issues"
+            exit 1
+          fi
+
+  coverage:
+    runs-on: ubuntu-22.04
+    permissions:
+      checks: write # to publish the report
+    steps:
+      - uses: actions/checkout@0ad4b8fadaa221de15dcec353f45205ec38ea70b # v4.1.4
+      # Prefer running on Ubuntu over Dart Docker image
+      - uses: dart-lang/setup-dart@fedb1266e91cf51be2fdb382869461a434b920a3 # v1.6.2
+        with:
+          sdk: 3.3.0
+      - name: Install coverage tools
+        run: |
+          ./tool/apt-install.sh lcov
+          dart pub global activate coverage
+      - name: Prepare objectbox_test
+        working-directory: objectbox_test
+        run: |
+          dart pub get
+          dart run build_runner build
+      - name: Prepare objectbox
+        working-directory: objectbox
+        run: |
+          ../install.sh
+          dart pub get
+      - name: Generate test coverage
+        working-directory: objectbox
+        run: ./tool/coverage.sh
+      - uses: devmasx/coverage-check-action@4a754f8957c6824e0a0d44bf9168fdbdf47e7e2f # v1.2.0
+        with:
+          type: lcov
+          result_path: objectbox/coverage/lcov.info
+          min_coverage: 90
+          token: ${{ github.token }}
+      - uses: danielpalme/ReportGenerator-GitHub-Action@2a2d60ea1c7e811f54684179af6ac1ae8c1ce69a # v5.2.5
+        with:
+          reports: 'objectbox/coverage/lcov.info'
+          targetdir: 'coveragereport'
+          reporttypes: 'HtmlInline' # The output formats and scope (separated by semicolon) Values: Badges, Clover, Cobertura, CsvSummary, Html, HtmlChart, HtmlInline, HtmlInline_AzurePipelines, HtmlInline_AzurePipelines_Dark, HtmlSummary, JsonSummary, Latex, LatexSummary, lcov, MarkdownSummary, MHtml, PngChart, SonarQube, TeamCitySummary, TextSummary, Xml, XmlSummary
+          sourcedirs: 'objectbox'
+      - uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: CoverageReport # Artifact name
+          path: coveragereport # Directory containing files to upload
